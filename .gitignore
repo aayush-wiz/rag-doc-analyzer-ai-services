@@ -6,6 +6,7 @@
 .env.production
 .env.staging
 env.*
+.env.example
 
 # Python
 __pycache__/

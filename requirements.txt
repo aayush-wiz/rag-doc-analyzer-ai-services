@@ -1,56 +1,52 @@
-# FastAPI and related
-fastapi==0.112.0
-uvicorn[standard]==0.30.1
-pydantic==2.8.2
-python-multipart==0.0.9
+# ai-service/requirements.txt (MINIMAL - Essential packages only)
 
-# AI and Machine Learning
-openai>=1.40.0,<2.0.0
-langchain==0.2.6
-langchain-community==0.2.6
-langchain-openai==0.1.9
-langchain-chroma==0.1.2
+# FastAPI and server
+fastapi
+uvicorn[standard]
+python-multipart
 
-# LlamaIndex - Latest compatible versions
-llama-index==0.11.20
-llama-index-core==0.11.20
-llama-index-embeddings-openai==0.2.5
-llama-index-llms-openai==0.2.16
-llama-index-vector-stores-chroma==0.2.1
-llama-index-readers-file==0.2.2
+# LLM APIs
+google-generativeai
+anthropic
 
-# ChromaDB - Compatible with langchain-chroma
-chromadb==0.5.23
+# Document processing
+pypdf
+python-docx
+openpyxl
+python-pptx
+markdown
 
-# Document Processing
-pypdf2==3.0.1
-python-docx==1.1.2
-openpyxl==3.1.5
-markdown==3.6
+# ChromaDB for vector storage
+chromadb
 
-# Vector and Text Processing
-sentence-transformers==3.0.1
-transformers==4.44.0
-torch==2.4.0
-numpy==1.24.4
+# Data processing
+pandas
+numpy
 
-# Database and Storage
-sqlalchemy==2.0.31
-psycopg2-binary==2.9.9
+# Cloud storage
+boto3
 
-# Async and HTTP
-aiofiles==24.1.0
-httpx==0.27.0
-websockets==12.0
+# Authentication
+PyJWT
 
-# Utilities
-python-dotenv==1.0.1
-prometheus-client==0.20.0
-structlog==24.2.0
-rich==13.7.1
+# Data validation
+pydantic
+pydantic-settings
 
-# Development and Testing
-pytest==8.3.2
-pytest-asyncio==0.23.8
-black==24.8.0
-flake8==7.1.1 
+# HTTP client
+httpx
+
+# Text processing and embeddings
+sentence-transformers
+
+# Environment
+python-dotenv
+
+# Additional document processing
+beautifulsoup4
+lxml
+
+# Development tools (optional)
+pytest
+black
+isort
