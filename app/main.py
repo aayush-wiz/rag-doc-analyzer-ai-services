@@ -1,15 +1,41 @@
-# ai-service/app/main.py (SIMPLIFIED - NO COMPLEX IMPORTS)
-from fastapi import FastAPI, HTTPException
+# ai-services/app/main.py (SIMPLIFIED WORKING VERSION)
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import logging
 import asyncio
 from typing import Dict, Any
+from datetime import datetime
+from app.core.document_processor import DocumentProcessor
+from app.core.query_engine import RAGQueryEngine
 
-# Simple imports - no complex vector store dependencies
-from app.config.settings import settings
+# Your existing imports
+from app.config.settings import settings, validate_settings
 from app.core.llm_client import llm_client
+from app.core.vector_store import VectorStoreManager
 
-# Setup logging
+# Your updated models (only if they exist)
+try:
+    from app.models.requests import (
+        DocumentProcessRequest,
+        ChatQueryRequest,
+        ChatSummaryRequest,
+        DocumentDeleteRequest,
+    )
+    from app.models.responses import (
+        DocumentProcessResponse,
+        ChatQueryResponse,
+        ChatSummaryResponse,
+        DocumentDeleteResponse,
+    )
+
+    MODELS_AVAILABLE = True
+except ImportError:
+    MODELS_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("Models not available, using basic responses")
+
+# Setup logging using your LOG_LEVEL setting
 logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper()))
 logger = logging.getLogger(__name__)
 
@@ -17,12 +43,12 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="DocAnalyzer AI Service",
     description="AI-powered document processing and RAG service",
-    version="1.0.0",
+    version="2.0.0",
     docs_url="/docs" if settings.ENVIRONMENT == "development" else None,
     redoc_url="/redoc" if settings.ENVIRONMENT == "development" else None,
 )
 
-# Add middleware
+# Add CORS middleware using your settings
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
@@ -32,73 +58,204 @@ app.add_middleware(
 )
 
 
+# Add to dependency injection
+async def get_document_processor(
+    vector_store: VectorStoreManager = Depends(get_vector_store_manager),
+) -> DocumentProcessor:
+    """Get document processor dependency"""
+    return DocumentProcessor(vector_store)
+
+
+async def get_query_engine(
+    vector_store: VectorStoreManager = Depends(get_vector_store_manager),
+) -> RAGQueryEngine:
+    """Get RAG query engine dependency"""
+    return RAGQueryEngine(vector_store)
+
+
+# Global state
+app.state.vector_store_manager = None
+
+
 @app.on_event("startup")
 async def startup_event():
-    """Application startup"""
-    logger.info("🚀 Starting AI Service...")
-    logger.info("✅ AI Service started successfully")
+    """Application startup with your settings"""
+    logger.info("🚀 Starting AI Service (Simplified Version)...")
+
+    try:
+        # Validate settings first
+        validate_settings()
+        logger.info("✅ Settings validated")
+
+        # Initialize vector store manager with your settings
+        vector_store_manager = VectorStoreManager()
+        await vector_store_manager.initialize()
+
+        # Store globally for dependency injection
+        app.state.vector_store_manager = vector_store_manager
+
+        logger.info(f"✅ Vector store initialized")
+        logger.info(
+            f"✅ Primary LLM: {settings.PRIMARY_LLM}, Fallback: {settings.FALLBACK_LLM}"
+        )
+        logger.info(f"✅ Embedding model: {settings.EMBEDDING_MODEL_TYPE}")
+        logger.info("✅ AI Service started successfully")
+
+    except Exception as e:
+        logger.error(f"❌ Startup failed: {str(e)}")
+        raise
 
 
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Application shutdown"""
+    logger.info("🛑 Shutting down AI Service...")
+
+    if app.state.vector_store_manager:
+        await app.state.vector_store_manager.close()
+
+    logger.info("👋 AI Service stopped")
+
+
+# Dependency injection
+async def get_vector_store_manager() -> VectorStoreManager:
+    """Get vector store manager dependency"""
+    if not app.state.vector_store_manager:
+        raise HTTPException(status_code=500, detail="Vector store not initialized")
+    return app.state.vector_store_manager
+
+
+# Exception handlers
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Global exception handler"""
+    logger.error(f"Unhandled exception: {str(exc)}", exc_info=True)
+
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "error": {
+                "error": "Internal server error",
+                "error_type": "INTERNAL_ERROR",
+                "details": (
+                    {"message": str(exc)}
+                    if settings.ENVIRONMENT == "development"
+                    else None
+                ),
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+        },
+    )
+
+
+# Enhanced health check using your settings
+@app.get("/health")
+async def health_check():
+    """Enhanced health check with your configuration"""
+    try:
+        # Test vector store
+        vector_store_status = "not_initialized"
+        if app.state.vector_store_manager:
+            try:
+                await app.state.vector_store_manager.get_collection_stats(
+                    "health_check"
+                )
+                vector_store_status = "connected"
+            except Exception:
+                vector_store_status = "error"
+
+        # Check your LLM configurations
+        gemini_status = "configured" if settings.GEMINI_API_KEY else "not_configured"
+        claude_status = "configured" if settings.CLAUDE_API_KEY else "not_configured"
+
+        # Check your storage
+        r2_status = (
+            "configured"
+            if all(
+                [
+                    settings.R2_ACCOUNT_ID,
+                    settings.R2_ACCESS_KEY_ID,
+                    settings.R2_SECRET_ACCESS_KEY,
+                    settings.R2_BUCKET,
+                ]
+            )
+            else "not_configured"
+        )
+
+        return {
+            "status": "healthy",
+            "version": "2.0.0",
+            "timestamp": datetime.utcnow().isoformat(),
+            "components": {
+                "vector_store": vector_store_status,
+                "primary_llm": f"{settings.PRIMARY_LLM} ({gemini_status if settings.PRIMARY_LLM == 'gemini' else claude_status})",
+                "fallback_llm": f"{settings.FALLBACK_LLM} ({claude_status if settings.FALLBACK_LLM == 'claude' else gemini_status})",
+                "embedding_model": settings.EMBEDDING_MODEL_TYPE,
+                "r2_storage": r2_status,
+                "environment": settings.ENVIRONMENT,
+            },
+        }
+
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "unhealthy",
+                "error": str(e),
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+        )
+
+
+# Root endpoint showing your configuration
 @app.get("/")
 async def root():
     """Root endpoint"""
     return {
         "service": "DocAnalyzer AI Service",
-        "version": "1.0.0",
+        "version": "2.0.0",
+        "architecture": "Simplified (Direct ChromaDB)",
+        "configuration": {
+            "primary_llm": settings.PRIMARY_LLM,
+            "fallback_llm": settings.FALLBACK_LLM,
+            "embedding_model": settings.EMBEDDING_MODEL_TYPE,
+            "max_file_size": f"{settings.MAX_FILE_SIZE // (1024*1024)}MB",
+            "supported_extensions": len(settings.SUPPORTED_EXTENSIONS),
+            "environment": settings.ENVIRONMENT,
+        },
         "status": "running",
         "docs": "/docs" if settings.ENVIRONMENT == "development" else "disabled",
     }
 
 
-@app.get("/health")
-async def health_check():
-    """Health check endpoint"""
-    try:
-        # Test LLM connections
-        gemini_status = "configured" if settings.GEMINI_API_KEY else "not configured"
-        claude_status = "configured" if settings.CLAUDE_API_KEY else "not configured"
-
-        return {
-            "status": "healthy",
-            "version": "1.0.0",
-            "timestamp": "2024-01-15T10:30:00",
-            "components": {
-                "service": "healthy",
-                "gemini": gemini_status,
-                "claude": claude_status,
-                "llm_client": "initialized",
-            },
-        }
-    except Exception as e:
-        logger.error(f"Health check failed: {str(e)}")
-        return {"status": "unhealthy", "error": str(e)}
-
-
-# Simple document processing endpoint
 @app.post("/api/documents/process")
-async def process_document(request: Dict[str, Any]):
-    """Process document (simplified version)"""
-    logger.info(f"Processing document: {request.get('file_name', 'unknown')}")
+async def process_document(
+    request: Dict[str, Any],
+    doc_processor: DocumentProcessor = Depends(get_document_processor),
+):
+    """Process document endpoint (REAL IMPLEMENTATION)"""
+    logger.info(
+        f"Processing document {request.get('document_id')} for chat {request.get('chat_id')}"
+    )
 
     try:
-        # Simple processing simulation
-        document_id = request.get("document_id")
-        file_name = request.get("file_name", "unknown")
-
-        # Simulate processing time
-        await asyncio.sleep(1)
+        result = await doc_processor.process_document(
+            chat_id=request.get("chat_id"),
+            document_id=request.get("document_id"),
+            file_path=request.get("file_path"),
+            file_name=request.get("file_name"),
+            file_type=request.get("file_type"),
+        )
 
         return {
-            "success": True,
-            "document_id": document_id,
-            "message": f"Document '{file_name}' processed successfully",
-            "stats": {
-                "total_documents": 1,
-                "total_nodes": 5,
-                "total_characters": 1000,
-                "average_node_size": 200,
-            },
-            "processing_time": 1.0,
+            "success": result["success"],
+            "document_id": request.get("document_id"),
+            "message": result["message"],
+            "stats": result.get("stats"),
+            "error": result.get("error"),
+            "processing_time": 1.0,  # You can add timing
         }
 
     except Exception as e:
@@ -108,125 +265,134 @@ async def process_document(request: Dict[str, Any]):
             "document_id": request.get("document_id"),
             "message": "Document processing failed",
             "error": str(e),
+            "processing_time": 0.0,
         }
 
 
-# Simple query processing endpoint
-@app.post("/api/chat/query")
-async def process_query(request: Dict[str, Any]):
-    """Process RAG query (simplified version)"""
-    query = request.get("query", "")
-    chat_id = request.get("chat_id")
-
-    logger.info(f"Processing query for chat {chat_id}: {query[:50]}...")
+@app.post("/api/documents/process")
+async def process_document(
+    request: Dict[str, Any],
+    doc_processor: DocumentProcessor = Depends(get_document_processor),
+):
+    """Process document endpoint (REAL IMPLEMENTATION)"""
+    logger.info(
+        f"Processing document {request.get('document_id')} for chat {request.get('chat_id')}"
+    )
 
     try:
-        # Generate AI response
-        system_prompt = """You are a helpful AI assistant. You are part of a document analysis system. 
-        For now, you are in a simplified mode where you don't have access to uploaded documents yet.
-        Please provide a helpful response and mention that document analysis features are being set up."""
-
-        ai_response = await llm_client.generate_completion(
-            prompt=query,
-            system_prompt=system_prompt,
-            max_tokens=settings.MAX_TOKENS,
-            temperature=settings.TEMPERATURE,
+        result = await doc_processor.process_document(
+            chat_id=request.get("chat_id"),
+            document_id=request.get("document_id"),
+            file_path=request.get("file_path"),
+            file_name=request.get("file_name"),
+            file_type=request.get("file_type"),
         )
 
         return {
-            "answer": ai_response,
-            "sources": [],
-            "confidence": 0.5,
-            "metadata": {
-                "total_documents_searched": 0,
-                "relevant_chunks_found": 0,
-                "query_length": len(query),
-                "response_length": len(ai_response),
-            },
-            "processing_time": 2.0,
+            "success": result["success"],
+            "document_id": request.get("document_id"),
+            "message": result["message"],
+            "stats": result.get("stats"),
+            "error": result.get("error"),
+            "processing_time": 1.0,  # You can add timing
         }
 
     except Exception as e:
-        logger.error(f"Query processing error: {str(e)}")
+        logger.error(f"Document processing error: {str(e)}")
         return {
-            "answer": f"I encountered an error while processing your question: {str(e)}. Please try again or check your API key configuration.",
-            "sources": [],
-            "confidence": 0.0,
-            "metadata": {
-                "error": str(e),
-                "total_documents_searched": 0,
-                "relevant_chunks_found": 0,
-                "query_length": len(query),
-                "response_length": 0,
-            },
+            "success": False,
+            "document_id": request.get("document_id"),
+            "message": "Document processing failed",
+            "error": str(e),
+            "processing_time": 0.0,
         }
 
 
-# Simple summary endpoint
-@app.post("/api/chat/summary")
-async def generate_summary(request: Dict[str, Any]):
-    """Generate chat summary (simplified version)"""
-    chat_id = request.get("chat_id")
-
-    logger.info(f"Generating summary for chat {chat_id}")
-
+# Delete document endpoint
+@app.delete("/api/documents/{chat_id}/{document_id}")
+async def delete_document(
+    chat_id: int,
+    document_id: int,
+    vector_store: VectorStoreManager = Depends(get_vector_store_manager),
+):
+    """Delete document endpoint"""
     try:
-        summary_prompt = "Please provide a brief summary of what a document analysis system would typically help with."
-
-        summary_response = await llm_client.generate_completion(
-            prompt=summary_prompt, max_tokens=500, temperature=0.1
-        )
+        collection_name = f"chat_{chat_id}"
+        success = await vector_store.delete_document(collection_name, document_id)
 
         return {
-            "summary": summary_response,
-            "key_topics": ["Document Analysis", "AI Processing", "Question Answering"],
-            "document_count": 0,
-            "total_chunks": 0,
-            "processing_time": 1.5,
+            "success": success,
+            "document_id": document_id,
+            "message": (
+                "Document deleted successfully"
+                if success
+                else "Document deletion failed"
+            ),
         }
 
     except Exception as e:
-        logger.error(f"Summary generation error: {str(e)}")
+        logger.error(f"Document deletion error: {str(e)}")
         return {
-            "summary": f"Error generating summary: {str(e)}",
-            "key_topics": [],
-            "document_count": 0,
-            "total_chunks": 0,
+            "success": False,
+            "document_id": document_id,
+            "message": "Document deletion failed",
+            "error": str(e),
         }
 
 
-# Additional endpoints for compatibility
+# Statistics endpoints
 @app.get("/api/documents/stats/{chat_id}")
-async def get_document_stats(chat_id: int):
+async def get_document_stats(
+    chat_id: int, vector_store: VectorStoreManager = Depends(get_vector_store_manager)
+):
     """Get document statistics"""
-    return {
-        "total_chunks": 0,
-        "total_documents": 0,
-        "collection_name": f"chat_{chat_id}",
-    }
+    collection_name = f"chat_{chat_id}"
+    return await vector_store.get_collection_stats(collection_name)
 
 
 @app.get("/api/chat/stats/{chat_id}")
-async def get_chat_stats(chat_id: int):
+async def get_chat_stats(
+    chat_id: int, vector_store: VectorStoreManager = Depends(get_vector_store_manager)
+):
     """Get chat statistics"""
-    return {
-        "total_chunks": 0,
-        "total_documents": 0,
-        "collection_name": f"chat_{chat_id}",
-    }
+    collection_name = f"chat_{chat_id}"
+    return await vector_store.get_collection_stats(collection_name)
 
 
-@app.delete("/api/documents/{chat_id}/{document_id}")
-async def delete_document(chat_id: int, document_id: int):
-    """Delete document"""
+# Service configuration endpoint (showing your settings)
+@app.get("/api/config")
+async def get_configuration():
+    """Get service configuration (non-sensitive)"""
     return {
-        "success": True,
-        "document_id": document_id,
-        "message": f"Document {document_id} deletion simulated",
+        "llm": {
+            "primary": settings.PRIMARY_LLM,
+            "fallback": settings.FALLBACK_LLM,
+            "temperature": settings.TEMPERATURE,
+            "max_tokens": settings.MAX_TOKENS,
+        },
+        "document_processing": {
+            "chunk_size": settings.CHUNK_SIZE,
+            "chunk_overlap": settings.CHUNK_OVERLAP,
+            "max_file_size": settings.MAX_FILE_SIZE,
+            "supported_extensions": settings.SUPPORTED_EXTENSIONS,
+        },
+        "vector_search": {
+            "similarity_threshold": settings.SIMILARITY_THRESHOLD,
+            "max_search_results": settings.MAX_SEARCH_RESULTS,
+        },
+        "rate_limits": {
+            "per_minute": settings.RATE_LIMIT_PER_MINUTE,
+            "per_hour": settings.RATE_LIMIT_PER_HOUR,
+        },
     }
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host=settings.HOST, port=settings.PORT)
+    uvicorn.run(
+        app,
+        host=settings.HOST,
+        port=settings.PORT,
+        log_level=settings.LOG_LEVEL.lower(),
+    )

@@ -1,4 +1,4 @@
-# ai-service/app/core/vector_store.py
+# ai-services/app/core/vector_store.py (WORKING VERSION)
 import logging
 import asyncio
 from typing import List, Dict, Any, Optional
@@ -7,8 +7,6 @@ from concurrent.futures import ThreadPoolExecutor
 import chromadb
 from chromadb.config import Settings as ChromaSettings
 from llama_index.core.schema import NodeWithScore, BaseNode
-from llama_index.vector_stores.chroma import ChromaVectorStore
-from llama_index.core import VectorStoreIndex, StorageContext
 
 from app.config.settings import settings
 
@@ -26,11 +24,17 @@ class VectorStoreManager:
     async def initialize(self):
         """Initialize ChromaDB client"""
         try:
-            # Initialize ChromaDB client
+            # Initialize ChromaDB client based on environment
             if settings.ENVIRONMENT == "development":
                 # Use persistent local storage for development
                 self.client = chromadb.PersistentClient(
-                    path=settings.CHROMA_PERSIST_DIRECTORY
+                    path=settings.CHROMA_PERSIST_DIRECTORY,
+                    settings=ChromaSettings(
+                        allow_reset=False, anonymized_telemetry=False
+                    ),
+                )
+                logger.info(
+                    f"✅ ChromaDB initialized (Local): {settings.CHROMA_PERSIST_DIRECTORY}"
                 )
             else:
                 # Use HTTP client for production
@@ -40,6 +44,9 @@ class VectorStoreManager:
                     settings=ChromaSettings(
                         allow_reset=False, anonymized_telemetry=False
                     ),
+                )
+                logger.info(
+                    f"✅ ChromaDB initialized (Remote): {settings.CHROMA_HOST}:{settings.CHROMA_PORT}"
                 )
 
             # Test connection

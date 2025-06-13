@@ -1,6 +1,5 @@
 # ai-service/app/services/document_service.py
 import logging
-import asyncio
 import time
 from typing import Dict, Any
 
