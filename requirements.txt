@@ -1,64 +1,11 @@
-# ai-service/requirements.txt (MINIMAL - Essential packages only)
-
-# FastAPI and server
-fastapi
-uvicorn[standard]
-python-multipart
-
-# LLM APIs
-google-generativeai
-anthropic
-
-# Document processing
-pypdf
-python-docx
-openpyxl
-python-pptx
-markdown
-
-# Data processing
-pandas
-numpy
-
-# Cloud storage
-boto3
-
-# Authentication
-PyJWT
-
-# Data validation
-pydantic
-pydantic-settings
-
-# HTTP client
-httpx
-
-# Text processing and embeddings
-sentence-transformers
-
-# Environment
-python-dotenv
-
-# Additional document processing
-beautifulsoup4
-lxml
-
-# Development tools (optional)
-pytest
-black
-isort
-
-# llama-index
-llama-index>=0.9.0
-llama-index-vector-stores-chroma
-
-# Core LlamaIndex
-llama-index-core>=0.10.0
-llama-index-readers-file>=0.4.0  # This was missing!
-
-# Vector database
-chromadb>=0.4.0
-
-# HTTP requests
-aiohttp>=3.8.0
-
+fastapi==0.110.1
+uvicorn[standard]==0.29.0
+grpcio==1.62.2
+grpcio-tools==1.62.2
+protobuf==4.25.3
+python-dotenv==1.0.1
+llama-index==0.10.43
+llama-index-llms-gemini==0.1.2
+llama-index-embeddings-gemini==0.1.2
+llama-index-vector-stores-chroma==0.1.4
+chromadb==0.4.24
