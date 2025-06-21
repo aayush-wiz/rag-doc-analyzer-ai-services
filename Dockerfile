@@ -1,4 +1,8 @@
-# FILE: oracyn-ai-service/Dockerfile
+# =================================================================
+# FILE: oracyn-ai-service/Dockerfile (DEFINITIVE FIX)
+# This version has a simplified command that no longer runs the
+# problematic bootstrap script.
+# =================================================================
 
 # Use an official Python runtime as a parent image
 FROM python:3.11-slim
@@ -15,6 +19,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the application's source code
 COPY . .
 
-# Command to run the application
-# We use uvicorn to run the FastAPI app, which will also start our gRPC server.
+# Final CMD: Directly start the FastAPI/gRPC server.
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

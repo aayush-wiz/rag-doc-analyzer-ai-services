@@ -1,16 +1,20 @@
 import os
-from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, StorageContext
-from llama_index.vector_stores.chroma import ChromaVectorStore
+import faiss
+from pathlib import Path
+from llama_index.core import SimpleDirectoryReader, StorageContext
+from llama_index.core.indices.vector_store import VectorStoreIndex
+from llama_index.vector_stores.faiss import FaissVectorStore
 from llama_index.llms.gemini import Gemini
 from llama_index.embeddings.gemini import GeminiEmbedding
-import chromadb
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Initialize ChromaDB client
-# This points to the ChromaDB service running in Docker.
-chroma_client = chromadb.HttpClient(host="oracyn_chroma_db", port=8000)
+# --- FAISS Setup ---
+# Define the path where FAISS index files will be stored inside the Docker volume
+FAISS_STORAGE_PATH = Path("/app/faiss_storage")
+FAISS_STORAGE_PATH.mkdir(exist_ok=True)
+
 
 # Initialize Gemini models
 llm = Gemini(
@@ -21,25 +25,25 @@ embed_model = GeminiEmbedding(
 )
 
 
-def process_document(document_path: str, chat_id: str):
-    """Loads a document, creates an index, and persists it to ChromaDB."""
-    try:
-        # Create a ChromaVectorStore with a unique collection for the chat_id
-        vector_store = ChromaVectorStore(
-            chroma_collection=chroma_client.get_or_create_collection(chat_id)
-        )
-        storage_context = StorageContext.from_defaults(vector_store=vector_store)
+def get_index_path(chat_id: str) -> str:
+    """Helper function to create a unique file path for each chat's index."""
+    return str(FAISS_STORAGE_PATH / f"{chat_id}.faiss")
 
-        # Load the document from the shared volume
+
+def process_document(document_path: str, chat_id: str):
+    """Loads a document, creates a FAISS index, and saves it to a file."""
+    try:
+        # Load the document
         documents = SimpleDirectoryReader(input_files=[document_path]).load_data()
 
-        # Create the index, which automatically handles chunking and embedding
-        VectorStoreIndex.from_documents(
-            documents,
-            storage_context=storage_context,
-            embed_model=embed_model,
-        )
-        print(f"Successfully processed and indexed document for chat_id: {chat_id}")
+        # Create the FAISS index in memory
+        index = VectorStoreIndex.from_documents(documents, embed_model=embed_model)
+        
+        # Save the index to a file
+        index_path = get_index_path(chat_id)
+        index.storage_context.persist(persist_dir=index_path)
+
+        print(f"Successfully processed and saved FAISS index for chat_id: {chat_id}")
         return True
     except Exception as e:
         print(f"Error processing document: {e}")
@@ -47,16 +51,16 @@ def process_document(document_path: str, chat_id: str):
 
 
 def answer_query(query_text: str, chat_id: str):
-    """Queries the index for a given chat_id to generate an answer."""
+    """Loads a FAISS index from a file and queries it to generate an answer."""
     try:
-        # Load the index from the specific ChromaDB collection
-        vector_store = ChromaVectorStore(
-            chroma_collection=chroma_client.get_collection(chat_id)
-        )
-        index = VectorStoreIndex.from_vector_store(
-            vector_store=vector_store,
-            embed_model=embed_model,
-        )
+        index_path = get_index_path(chat_id)
+        
+        if not os.path.exists(index_path):
+             return "Document not found. Please upload the document for this chat first."
+
+        # Load the index from the file
+        storage_context = StorageContext.from_defaults(persist_dir=index_path)
+        index = VectorStoreIndex.from_storage(storage_context, embed_model=embed_model)
 
         # Create a query engine
         query_engine = index.as_query_engine(llm=llm)
@@ -66,4 +70,4 @@ def answer_query(query_text: str, chat_id: str):
         return str(response)
     except Exception as e:
         print(f"Error answering query: {e}")
-        return "An error occurred while generating the answer. The document may not be processed yet."
+        return "An error occurred while generating the answer."
