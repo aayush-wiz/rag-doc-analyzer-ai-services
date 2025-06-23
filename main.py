@@ -2,16 +2,16 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
 from dotenv import load_dotenv
-from rag_engine import process_document, answer_query
+from rag_engine import process_document_content, answer_query
 
 load_dotenv()
 
-# THIS LINE IS THE KEY FIX for the AI service error.
 app = FastAPI()
 
-# --- Pydantic Models for Request Bodies ---
-class DocumentRequest(BaseModel):
-    document_path: str
+# --- Pydantic Models ---
+class DocumentContentRequest(BaseModel):
+    file_name: str
+    file_content_base64: str # Expecting Base64 encoded file content
     chat_id: str
 
 class ChatMessage(BaseModel):
@@ -29,12 +29,16 @@ def health_check():
     return {"status": "ORACYN AI Service is running"}
 
 @app.post("/process-document")
-async def process_document_endpoint(request: DocumentRequest):
-    print(f"REST: Received process-document request for chat_id: {request.chat_id}")
-    success = process_document(request.document_path, request.chat_id)
+async def process_document_endpoint(request: DocumentContentRequest):
+    print(f"REST: Received process-document content request for chat_id: {request.chat_id}")
+    success = process_document_content(
+        request.file_name,
+        request.file_content_base64,
+        request.chat_id
+    )
     if not success:
-        raise HTTPException(status_code=500, detail="Failed to process document")
-    return {"message": "Document processing initiated successfully."}
+        raise HTTPException(status_code=500, detail="Failed to process document content")
+    return {"message": "Document content processed successfully."}
 
 @app.post("/answer-query")
 async def answer_query_endpoint(request: QueryRequest):
