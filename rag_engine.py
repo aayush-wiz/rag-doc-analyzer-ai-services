@@ -4,10 +4,13 @@ import tempfile
 import json
 from pathlib import Path
 from dotenv import load_dotenv
-
+from typing import Optional
 from llama_index.core import (
-    SimpleDirectoryReader, StorageContext, VectorStoreIndex,
-    load_index_from_storage, Settings
+    SimpleDirectoryReader,
+    StorageContext,
+    VectorStoreIndex,
+    load_index_from_storage,
+    Settings,
 )
 from llama_index.core.memory import ChatMemoryBuffer
 from llama_index.core.llms import ChatMessage
@@ -19,8 +22,12 @@ load_dotenv()
 
 # --- Global Settings Configuration ---
 print("Configuring LlamaIndex global settings...")
-Settings.llm = Gemini(model_name="models/gemini-1.5-flash-latest", api_key=os.getenv("GEMINI_API_KEY"))
-Settings.embed_model = GeminiEmbedding(model_name="models/text-embedding-004", api_key=os.getenv("GEMINI_API_KEY"))
+Settings.llm = Gemini(
+    model_name="models/gemini-1.5-flash-latest", api_key=os.getenv("GEMINI_API_KEY")
+)
+Settings.embed_model = GeminiEmbedding(
+    model_name="models/text-embedding-004", api_key=os.getenv("GEMINI_API_KEY")
+)
 print("LlamaIndex global settings configured.")
 
 # --- FAISS Setup ---
@@ -31,6 +38,7 @@ FAISS_STORAGE_PATH.mkdir(exist_ok=True)
 def get_index_path(chat_id: str) -> str:
     return str(FAISS_STORAGE_PATH / f"{chat_id}.faiss")
 
+
 def process_document_content(file_name: str, file_content_base64: str, chat_id: str):
     try:
         file_content = base64.b64decode(file_content_base64)
@@ -38,7 +46,7 @@ def process_document_content(file_name: str, file_content_base64: str, chat_id: 
             temp_file_path = Path(temp_dir) / file_name
             with open(temp_file_path, "wb") as f:
                 f.write(file_content)
-            
+
             documents = SimpleDirectoryReader(input_files=[temp_file_path]).load_data()
             index = VectorStoreIndex.from_documents(documents)
             index_path = get_index_path(chat_id)
@@ -49,70 +57,112 @@ def process_document_content(file_name: str, file_content_base64: str, chat_id: 
         print(f"Error processing document content: {e}")
         return False
 
-def answer_query(query_text: str, chat_id: str, history: list = None):
+
+def answer_query(query_text: str, chat_id: str, history: Optional[list] = None):
     index_path = get_index_path(chat_id)
     try:
         storage_context = StorageContext.from_defaults(persist_dir=index_path)
         index = load_index_from_storage(storage_context)
-        memory = ChatMemoryBuffer.from_defaults(token_limit=1500)
-        
+        memory = ChatMemoryBuffer.from_defaults(token_limit=3000)
+
         if history:
             for msg in history:
                 memory.put(ChatMessage(role=msg.role, content=msg.content))
 
+            system_prompt = (
+                """
+        You are Oracyn, a helpful and precise AI assistant. Your primary function is to answer user queries based on the provided document context.
+
+        Follow these rules strictly:
+        1.  **Format your entire response using Markdown.** Use headings, lists, bold text, and code blocks where appropriate to structure your answer clearly.
+        2.  If the user asks for data in a table, generate a Markdown table.
+        3.  If you are providing code snippets, use Markdown code blocks with the correct language identifier (e.g., ```python ... ```).
+        4.  Base your answers *only* on the context from the documents provided. If the information is not in the documents, state that clearly. Do not use external knowledge.
+        """,
+            )
         chat_engine = index.as_chat_engine(
-            chat_mode="context", memory=memory,
-            system_prompt="You are Oracyn, a helpful AI assistant. Answer based on the documents."
+            chat_mode="context", memory=memory, system_prompt=system_prompt
         )
+
         response = chat_engine.chat(query_text)
-        print(f"Successfully generated conversational answer for chat_id: {chat_id}")
-        return str(response)
+
+        # Extract token usage from LlamaIndex response metadata
+        token_usage = response.metadata.get("token_usage", {})
+        total_tokens = token_usage.get("total_tokens", 0)
+
+        print(
+            f"Successfully generated answer for chat_id: {chat_id}, Tokens: {total_tokens}"
+        )
+        # Return both the answer and the token count
+        return {"answer": str(response), "tokens_used": total_tokens}
     except FileNotFoundError:
-        return "Document not found. Please upload the document for this chat first."
+        return {"answer": "Document not found...", "tokens_used": 0}
     except Exception as e:
         print(f"Error answering query: {e}")
-        return "An error occurred while generating the answer."
+        return {
+            "answer": "An error occurred while generating the answer.",
+            "tokens_used": 0,
+        }
 
-# @desc    Generate structured JSON data for a chart.
+
 def generate_chart_data(prompt: str, chat_id: str, chart_type: str):
     index_path = get_index_path(chat_id)
     try:
-        # THIS IS THE KEY FIX: Load the index from storage first.
         storage_context = StorageContext.from_defaults(persist_dir=index_path)
         index = load_index_from_storage(storage_context)
-        
-        # Now, safely access the full text from the document store.
-        doc_text = "\n".join([doc.get_content() for doc in index.docstore.docs.values()])
+        doc_text = "\n".join(
+            [doc.get_content() for doc in index.docstore.docs.values()]
+        )
 
         genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        model = genai.GenerativeModel("gemini-1.5-flash-latest")
 
         json_prompt = f"""
-        Act as a data analysis expert. Analyze the following document text and the user's request
-        to generate a valid JSON object suitable for a {chart_type} chart using a library like Chart.js or Recharts.
+        Act as an expert data analyst and a frontend developer's assistant. Your task is to analyze the following document text and the user's request to generate a valid JSON object perfectly formatted for Chart.js.
 
         USER'S REQUEST: "{prompt}"
 
-        DOCUMENT TEXT:
+        DOCUMENT TEXT (first 12000 characters):
         ---
-        {doc_text[:8000]} 
+        {doc_text[:12000]}
         ---
 
-        Your response MUST be ONLY the raw JSON object and nothing else. Do not wrap it in ```json ... ``` or any other text.
-        The JSON object must have two top-level keys: "type" and "data".
-        The "data" object must contain "labels" (an array of strings) and "datasets" (an array of objects).
-        Each object in "datasets" must have a "label" (a string) and "data" (an array of numbers).
+        **CRITICAL INSTRUCTIONS:**
+        1.  Your response MUST BE **ONLY** the raw JSON object. Do not include any explanatory text, markdown, or code block wrappers like ```json ... ```. The entire output must be parsable with `JSON.parse()`.
+        2.  The JSON object must have a `type` key (e.g., "{chart_type}") and a `data` key.
+        3.  The `data` object **MUST** contain a `labels` key (an array of strings) and a `datasets` key (an array of objects).
+        4.  Each object inside the `datasets` array **MUST** have a `label` (a string for the legend) and `data` (an array of numbers corresponding to the labels).
+        5.  For better visuals, you can optionally include `backgroundColor` (an array of RGBA strings like 'rgba(54, 162, 235, 0.5)') and `borderColor` (an array of RGB strings like 'rgb(54, 162, 235)') in the dataset objects. The length of these color arrays should match the length of the data array.
 
-        Now, generate the raw JSON object for the user's request.
+        EXAMPLE OF A PERFECT OUTPUT FOR A BAR CHART:
+        {{
+          "type": "bar",
+          "data": {{
+            "labels": ["Q1", "Q2", "Q3", "Q4"],
+            "datasets": [
+              {{
+                "label": "Sales 2024",
+                "data": [120, 190, 300, 500],
+                "backgroundColor": ["rgba(54, 162, 235, 0.5)"],
+                "borderColor": ["rgb(54, 162, 235)"]
+              }}
+            ]
+          }}
+        }}
+
+        Now, generate the raw JSON object based on the user's request and the document text.
         """
-        
         response = model.generate_content(json_prompt)
-        
+
+        # Extract token usage from the Gemini API response
+        tokens_used = model.count_tokens(json_prompt + response.text).total_tokens
+
         cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
         chart_json = json.loads(cleaned_text)
-        
-        print("Successfully generated chart JSON data.")
-        return chart_json
+
+        print(f"Successfully generated chart JSON. Tokens used: {tokens_used}")
+        # Return both the chart data and the token count
+        return {"chart_json": chart_json, "tokens_used": tokens_used}
 
     except Exception as e:
         print(f"Error generating chart data: {e}")
