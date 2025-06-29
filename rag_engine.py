@@ -6,16 +6,16 @@ from pathlib import Path
 from dotenv import load_dotenv
 from typing import Optional
 from llama_index.core import (
-    SimpleDirectoryReader,
-    StorageContext,
-    VectorStoreIndex,
-    load_index_from_storage,
-    Settings,
+    SimpleDirectoryReader,  # type: ignore
+    StorageContext,  # type: ignore
+    VectorStoreIndex,  # type: ignore
+    load_index_from_storage,  # type: ignore
+    Settings,  # type: ignore
 )
 from llama_index.core.memory import ChatMemoryBuffer
-from llama_index.core.llms import ChatMessage
+from llama_index.core.llms import ChatMessage  # type: ignore
 from llama_index.llms.gemini import Gemini
-from llama_index.embeddings.gemini import GeminiEmbedding
+from llama_index.embeddings.gemini import GeminiEmbedding  # type: ignore
 import google.generativeai as genai
 
 load_dotenv()

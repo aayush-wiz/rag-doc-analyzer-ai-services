@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import List, Optional, Any
+from typing import List, Optional
 from dotenv import load_dotenv
 
 # Import the new function from the rag_engine
