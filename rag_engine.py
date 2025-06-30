@@ -4,146 +4,224 @@ import tempfile
 import json
 from pathlib import Path
 from dotenv import load_dotenv
-from typing import Optional
+import traceback
+from typing import Optional, List, Dict
+
+# --- Core LlamaIndex Imports ---
 from llama_index.core import (
-    SimpleDirectoryReader,  # type: ignore
-    StorageContext,  # type: ignore
-    VectorStoreIndex,  # type: ignore
-    load_index_from_storage,  # type: ignore
-    Settings,  # type: ignore
+    SimpleDirectoryReader,
+    StorageContext,
+    VectorStoreIndex,
+    load_index_from_storage,
+    Settings,
 )
 from llama_index.core.memory import ChatMemoryBuffer
-from llama_index.core.llms import ChatMessage  # type: ignore
+from llama_index.core.llms import ChatMessage
+
+# --- LlamaIndex Integration Imports ---
 from llama_index.llms.gemini import Gemini
-from llama_index.embeddings.gemini import GeminiEmbedding  # type: ignore
+from llama_index.embeddings.gemini import GeminiEmbedding
+
+# --- Third-Party Imports ---
 import google.generativeai as genai
 
+# --- Load Environment & Global Config ---
 load_dotenv()
+print("Environment variables loaded.")
 
-# --- Global Settings Configuration ---
 print("Configuring LlamaIndex global settings...")
-Settings.llm = Gemini(
-    model_name="models/gemini-1.5-flash-latest", api_key=os.getenv("GEMINI_API_KEY")
-)
+api_key = os.getenv("GEMINI_API_KEY")
+if not api_key:
+    raise ValueError(
+        "GEMINI_API_KEY environment variable not set! Please check your .env file."
+    )
+
+Settings.llm = Gemini(model_name="models/gemini-1.5-flash-latest", api_key=api_key)
 Settings.embed_model = GeminiEmbedding(
-    model_name="models/text-embedding-004", api_key=os.getenv("GEMINI_API_KEY")
+    model_name="models/text-embedding-004", api_key=api_key
 )
+genai.configure(api_key=api_key)
 print("LlamaIndex global settings configured.")
 
-# --- FAISS Setup ---
-FAISS_STORAGE_PATH = Path("/app/faiss_storage")
-FAISS_STORAGE_PATH.mkdir(exist_ok=True)
+# --- Storage Path Configuration ---
+STORAGE_DIR = os.getenv("STORAGE_DIR", "./storage")
+VECTOR_STORAGE_PATH = Path(STORAGE_DIR) / "vector_storage"
+VECTOR_STORAGE_PATH.mkdir(parents=True, exist_ok=True)
+print(f"Vector storage path set to: {VECTOR_STORAGE_PATH.resolve()}")
 
 
-def get_index_path(chat_id: str) -> str:
-    return str(FAISS_STORAGE_PATH / f"{chat_id}.faiss")
+def get_persist_dir(chat_id: str) -> Path:
+    return VECTOR_STORAGE_PATH / chat_id
+
+
+# --- Core Logic Functions ---
 
 
 def process_document_content(file_name: str, file_content_base64: str, chat_id: str):
+    """
+    Processes an uploaded document, creates a vector index using the default
+    SimpleVectorStore, and persists it to disk.
+    """
+    persist_dir = get_persist_dir(chat_id)
+    print(f"Processing document for chat_id: {chat_id}. Storage: {persist_dir}")
+
     try:
         file_content = base64.b64decode(file_content_base64)
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_file_path = Path(temp_dir) / file_name
-            with open(temp_file_path, "wb") as f:
-                f.write(file_content)
+            temp_file_path.write_bytes(file_content)
 
             documents = SimpleDirectoryReader(input_files=[temp_file_path]).load_data()
             index = VectorStoreIndex.from_documents(documents)
-            index_path = get_index_path(chat_id)
-            index.storage_context.persist(persist_dir=index_path)
-        print(f"Successfully processed content for chat_id: {chat_id}")
+            index.storage_context.persist(persist_dir=persist_dir)
+
+        print(f"Successfully processed and indexed content for chat_id: {chat_id}")
         return True
-    except Exception as e:
-        print(f"Error processing document content: {e}")
+    except Exception:
+        print(f"FATAL: Error processing document content for chat {chat_id}:")
+        traceback.print_exc()
         return False
 
 
-def answer_query(query_text: str, chat_id: str, history: Optional[list] = None):
-    index_path = get_index_path(chat_id)
-    try:
-        storage_context = StorageContext.from_defaults(persist_dir=index_path)
-        index = load_index_from_storage(storage_context)
-        memory = ChatMemoryBuffer.from_defaults(token_limit=3000)
+def answer_query(
+    query_text: str, chat_id: str, history: Optional[List[Dict[str, str]]] = None
+):
+    """
+    Answers a user query using the persisted index for the given chat.
+    """
+    persist_dir = get_persist_dir(chat_id)
+    if not persist_dir.exists():
+        return {
+            "answer": f"Error: No document has been processed for this chat (ID: {chat_id}). Please upload a document first.",
+            "tokens_used": 0,
+        }
 
+    try:
+        storage_context = StorageContext.from_defaults(persist_dir=str(persist_dir))
+        index = load_index_from_storage(storage_context)
+
+        system_prompt = """
+        You are Oracyn, a meticulous and expert AI research assistant. Your primary function is to provide detailed, accurate, and well-structured answers based *exclusively* on the document context provided.
+
+        **Core Directives:**
+        1.  **Grounding:** Your answers MUST be based **only** on the information contained within the provided documents. Do not use any external knowledge or make assumptions beyond what is written.
+        2.  **Handling Missing Information:** If the answer to a question cannot be found in the provided context, you MUST state that clearly and concisely. For example, say "The provided document does not contain information about [the user's topic]." Do not attempt to guess the answer.
+        3.  **No Apologies:** Do not apologize or mention that you are an AI. Be direct and confident in your responses.
+
+        **Formatting Rules:**
+        -   **Markdown:** Structure your entire response using Markdown for maximum clarity.
+        -   **Structure:** Use headings (`## Sub-heading`), bold text (`**important term**`), and bulleted or numbered lists (`- ...` or `1. ...`) to break down complex information.
+        -   **Tables:** If the user requests tabular data or if it's the best way to present comparisons, generate a clean Markdown table.
+        -   **Code:** If you are presenting code, use Markdown code blocks with the correct language identifier (e.g., ```python ... ```).
+
+        **Answering Style:**
+        -   **Be Specific:** When quoting information or citing data from the document, be as specific as possible.
+        -   **Comprehensive:** Provide thorough answers. Do not be overly brief unless the question calls for it.
+        -   **Direct Start:** Begin your answer directly without introductory phrases like "Based on the provided context..." or "In the document...". The user already knows the context.
+        """
+
+        memory = ChatMemoryBuffer.from_defaults(token_limit=3000)
         if history:
             for msg in history:
-                memory.put(ChatMessage(role=msg.role, content=msg.content))
+                memory.put(ChatMessage(role=msg["role"], content=msg["content"]))
 
-            system_prompt = (
-                """
-        You are Oracyn, a helpful and precise AI assistant. Your primary function is to answer user queries based on the provided document context.
-
-        Follow these rules strictly:
-        1.  **Format your entire response using Markdown.** Use headings, lists, bold text, and code blocks where appropriate to structure your answer clearly.
-        2.  If the user asks for data in a table, generate a Markdown table.
-        3.  If you are providing code snippets, use Markdown code blocks with the correct language identifier (e.g., ```python ... ```).
-        4.  Base your answers *only* on the context from the documents provided. If the information is not in the documents, state that clearly. Do not use external knowledge.
-        """,
-            )
         chat_engine = index.as_chat_engine(
             chat_mode="context", memory=memory, system_prompt=system_prompt
         )
-
         response = chat_engine.chat(query_text)
 
-        # Extract token usage from LlamaIndex response metadata
-        token_usage = response.metadata.get("token_usage", {})
-        total_tokens = token_usage.get("total_tokens", 0)
+        total_tokens = 0
+        metadata = getattr(response, "response_metadata", None) or getattr(
+            response, "metadata", None
+        )
+        if metadata and isinstance(metadata, dict):
+            token_usage = metadata.get("token_usage", {})
+            total_tokens = token_usage.get("total_tokens", 0)
+        else:
+            print(
+                f"WARN: Could not find token usage metadata in chat response for chat_id: {chat_id}."
+            )
 
         print(
             f"Successfully generated answer for chat_id: {chat_id}, Tokens: {total_tokens}"
         )
-        # Return both the answer and the token count
         return {"answer": str(response), "tokens_used": total_tokens}
-    except FileNotFoundError:
-        return {"answer": "Document not found...", "tokens_used": 0}
-    except Exception as e:
-        print(f"Error answering query: {e}")
+    except Exception:
+        print(f"FATAL: Error answering query for chat {chat_id}:")
+        traceback.print_exc()
         return {
-            "answer": "An error occurred while generating the answer.",
+            "answer": "An error occurred while generating the answer. The document index might be corrupted.",
             "tokens_used": 0,
         }
 
 
+# Define a standard error response for when chart data cannot be found.
+CHART_ERROR_JSON = json.dumps(
+    {
+        "error": "The requested data to generate a chart could not be found in the document. Please ask for a chart that can be built from the provided text."
+    }
+)
+MAX_CONTEXT_CHARS_FOR_CHART = 16000
+
+
 def generate_chart_data(prompt: str, chat_id: str, chart_type: str):
-    index_path = get_index_path(chat_id)
+    """
+    Generates structured JSON for a chart using the document context.
+    """
+    persist_dir = get_persist_dir(chat_id)
+    if not persist_dir.exists():
+        return None
+
     try:
-        storage_context = StorageContext.from_defaults(persist_dir=index_path)
+        storage_context = StorageContext.from_defaults(persist_dir=str(persist_dir))
         index = load_index_from_storage(storage_context)
+
         doc_text = "\n".join(
             [doc.get_content() for doc in index.docstore.docs.values()]
         )
-
-        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
         model = genai.GenerativeModel("gemini-1.5-flash-latest")
 
         json_prompt = f"""
-        Act as an expert data analyst and a frontend developer's assistant. Your task is to analyze the following document text and the user's request to generate a valid JSON object perfectly formatted for Chart.js.
+        You are a meticulous data visualization specialist. Your sole task is to analyze the provided document text and the user's request to generate a **perfectly formatted, raw JSON object** suitable for Chart.js.
 
-        USER'S REQUEST: "{prompt}"
+        **CRITICAL GOAL:** The output JSON will be fed directly into a charting library without any intermediate processing. It must be 100% valid and adhere to the specified structure.
 
-        DOCUMENT TEXT (first 12000 characters):
+        **USER'S REQUEST:** "{prompt}"
+
+        **DOCUMENT TEXT (analyzing first {MAX_CONTEXT_CHARS_FOR_CHART} characters):**
         ---
-        {doc_text[:12000]}
+        {doc_text[:MAX_CONTEXT_CHARS_FOR_CHART]} 
         ---
 
-        **CRITICAL INSTRUCTIONS:**
-        1.  Your response MUST BE **ONLY** the raw JSON object. Do not include any explanatory text, markdown, or code block wrappers like ```json ... ```. The entire output must be parsable with `JSON.parse()`.
-        2.  The JSON object must have a `type` key (e.g., "{chart_type}") and a `data` key.
-        3.  The `data` object **MUST** contain a `labels` key (an array of strings) and a `datasets` key (an array of objects).
-        4.  Each object inside the `datasets` array **MUST** have a `label` (a string for the legend) and `data` (an array of numbers corresponding to the labels).
-        5.  For better visuals, you can optionally include `backgroundColor` (an array of RGBA strings like 'rgba(54, 162, 235, 0.5)') and `borderColor` (an array of RGB strings like 'rgb(54, 162, 235)') in the dataset objects. The length of these color arrays should match the length of the data array.
+        **RULESET (Follow Exactly):**
 
-        EXAMPLE OF A PERFECT OUTPUT FOR A BAR CHART:
+        1.  **JSON ONLY:** Your entire response MUST be the raw JSON object. Do NOT include any explanatory text, markdown ` ```json ... ``` ` wrappers, or any character outside of the JSON structure.
+
+        2.  **DATA NOT FOUND:** If the document does NOT contain the specific quantifiable data needed to create the requested chart, you MUST NOT invent data. Instead, you MUST return the following exact JSON object:
+            {CHART_ERROR_JSON}
+
+        3.  **VALID DATA STRUCTURE:** If the data is found, the JSON object must have this precise structure:
+            - A top-level `"type"` key (string, e.g., "{chart_type}").
+            - A top-level `"data"` key (object).
+            - The `"data"` object must contain:
+                - `"labels"`: An array of strings.
+                - `"datasets"`: An array of objects.
+            - Each object inside `"datasets"` must contain:
+                - `"label"`: A descriptive string for the legend.
+                - `"data"`: An array of numbers.
+                - **(Recommended)** `"backgroundColor"`: An array of visually appealing RGBA color strings (e.g., 'rgba(54, 162, 235, 0.6)').
+                - **(Recommended)** `"borderColor"`: An array of corresponding solid RGB color strings (e.g., 'rgb(54, 162, 235)').
+
+        **EXAMPLE OF PERFECT OUTPUT (for a 'bar' chart):**
         {{
           "type": "bar",
           "data": {{
-            "labels": ["Q1", "Q2", "Q3", "Q4"],
+            "labels": ["Q1 Sales", "Q2 Sales", "Q3 Sales", "Q4 Sales"],
             "datasets": [
               {{
-                "label": "Sales 2024",
-                "data": [120, 190, 300, 500],
-                "backgroundColor": ["rgba(54, 162, 235, 0.5)"],
+                "label": "Revenue (USD)",
+                "data": [120500, 195600, 301000, 500250],
+                "backgroundColor": ["rgba(54, 162, 235, 0.6)"],
                 "borderColor": ["rgb(54, 162, 235)"]
               }}
             ]
@@ -152,18 +230,26 @@ def generate_chart_data(prompt: str, chat_id: str, chart_type: str):
 
         Now, generate the raw JSON object based on the user's request and the document text.
         """
+
         response = model.generate_content(json_prompt)
 
-        # Extract token usage from the Gemini API response
-        tokens_used = model.count_tokens(json_prompt + response.text).total_tokens
+        # --- THIS IS THE FIX ---
+        # Manually count tokens for both input and output to ensure it always works.
+        input_tokens = model.count_tokens(json_prompt).total_tokens
+        output_tokens = model.count_tokens(response.text).total_tokens
+        tokens_used = input_tokens + output_tokens
+        # --- END OF THE FIX ---
 
         cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
         chart_json = json.loads(cleaned_text)
 
-        print(f"Successfully generated chart JSON. Tokens used: {tokens_used}")
-        # Return both the chart data and the token count
-        return {"chart_json": chart_json, "tokens_used": tokens_used}
+        if "error" in chart_json:
+            print(f"Chart generation failed logically: {chart_json['error']}")
+            return {"chart_json": chart_json, "tokens_used": tokens_used}
 
+        print(f"Successfully generated chart JSON. Tokens used: {tokens_used}")
+        return {"chart_json": chart_json, "tokens_used": tokens_used}
     except Exception as e:
-        print(f"Error generating chart data: {e}")
-        return None
+        print(f"FATAL: Error generating chart data for chat {chat_id}:")
+        traceback.print_exc()
+        raise e

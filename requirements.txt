@@ -4,8 +4,8 @@ python-dotenv==1.0.1
 llama-index==0.10.43
 llama-index-llms-gemini==0.1.2
 llama-index-embeddings-gemini==0.1.2
-llama-index-vector-stores-faiss==0.1.2
-faiss-cpu
+# llama-index-vector-stores-faiss==0.1.2 # <-- REMOVE OR COMMENT OUT
+# faiss-cpu                               # <-- REMOVE OR COMMENT OUT
 google-generativeai==0.3.2
 numpy<2.0
 pandas
